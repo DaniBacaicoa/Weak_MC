@@ -1,0 +1,11 @@
+torch
+torchvision
+pandas
+numpy
+scikit-learn
+openml
+ucimlrepo
+cvxpy
+notebook
+seaborn
+tqdm
