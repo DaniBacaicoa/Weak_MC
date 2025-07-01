@@ -66,3 +66,15 @@ class EMLoss(nn.Module):
         L = -torch.sum(Q*logp)
 
         return L
+    
+
+class My_loss(nn.Module):
+    def __init__(self):
+        super(My_loss).__init__()
+
+    def forward(self, inputs, targets):
+        # Example loss function: Mean Squared Error
+        loss = torch.mean((inputs - targets) ** 2)
+        return loss
+
+    
