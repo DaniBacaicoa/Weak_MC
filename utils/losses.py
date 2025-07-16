@@ -77,4 +77,34 @@ class My_loss(nn.Module):
         loss = torch.mean((inputs - targets) ** 2)
         return loss
 
-    
+class MarginalChainLoss(nn.Module):
+    """Marginal‑Chain loss (Chiang & Sugiyama, 2025).
+
+    The *marginal chain* strategy repeatedly applies the same noise channel
+    ``F`` **s** times, producing the *marginal* corruption matrix ``F^s``.  The loss
+    then mirrors *FwdLoss* but with this compounded matrix.
+
+    Args:
+        F (array‑like, shape ``(C, C)``): base forward/transition matrix.
+        steps (int): length of the chain (``s``). ``steps=1`` reduces to **FwdLoss**.
+        eps (float): numerical stabiliser.
+    """
+
+    def __init__(self, F, steps: int = 2, eps: float = 1e-8):
+        super().__init__()
+        if steps < 1:
+            raise ValueError("'steps' must be a positive integer (>=1).")
+        self.eps = eps
+        self.softmax = nn.Softmax(dim=1)
+        dev = _device()
+        F_tensor = torch.as_tensor(F, dtype=torch.float32, device=dev)
+        self.F_chain = torch.linalg.matrix_power(F_tensor, steps)  # F^steps
+
+    def forward(self, inputs: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        v = inputs - inputs.mean(dim=1, keepdim=True)
+        p = self.softmax(v)
+        z = z.long()
+
+        Mp = self.F_chain @ p.T
+        log_prob = torch.log(Mp[z, torch.arange(Mp.size(1))] + self.eps)
+        return -log_prob.sum()
