@@ -96,7 +96,7 @@ class MarginalChainLoss(nn.Module):
             raise ValueError("'steps' must be a positive integer (>=1).")
         self.eps = eps
         self.softmax = nn.Softmax(dim=1)
-        dev = _device()
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         F_tensor = torch.as_tensor(F, dtype=torch.float32, device=dev)
         self.F_chain = torch.linalg.matrix_power(F_tensor, steps)  # F^steps
 
