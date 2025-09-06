@@ -15,7 +15,7 @@ import sklearn
 import sklearn.datasets
 import sklearn.mixture
 import torch
-from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.data import Dataset, DataLoader, TensorDataset, random_split
 from torchvision import datasets, transforms
 
 import pandas as pd
@@ -45,6 +45,11 @@ class Data_handling(Dataset):
         self.shuffle = shuffling
 
         self.splitting_seed = splitting_seed
+
+        # <<< ADDED: Initialize validation attributes
+        self.valid_dataset = None
+        self.valid_loader = None
+        self.valid_num_samples = 0
 
         openml_ids = {
             'iris': 61,  # 150 x 5 - 3 (n_samples x n_feat - n_classes)
@@ -110,25 +115,30 @@ class Data_handling(Dataset):
             }
         
         le = sklearn.preprocessing.LabelEncoder()
-        if self.dataset in self.dataset in ['mnist','kmnist','fmnist']:
-            self.dataset = self.dataset.upper()
-            # The standard train/test partition of this datasets will be considered 
-            # but we will add the random partition
-            if self.dataset == 'MNIST':
+
+        # --- Image datasets (MNIST, KMNIST, FMNIST, Cifar10, Cifar100, Clothing1M) ---
+        if self.dataset in ['mnist','kmnist','fmnist','Cifar10', 'Cifar100']:
+            if self.dataset in ['mnist','kmnist','fmnist']:
+                self.dataset = self.dataset.upper()
+                if self.dataset == 'MNIST': norm = ((0.1307,), (0.3081,))
+                elif self.dataset == 'KMNIST': norm = ((0.1904,), (0.3475,))
+                elif self.dataset == 'FMNIST': norm = ((0.2860,), (0.3530,))
                 self.transform = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.1307,), (0.3081,))])
-            elif self.dataset == 'KMNIST':
+                    transforms.ToTensor(), 
+                    transforms.Normalize(*norm)])
+            else:
+                self.dataset = self.dataset.upper()
+                if self.dataset == 'CIFAR10': norm = ((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261)) # Rather than ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) seen in https://github.com/kuangliu/pytorch-cifar/issues/19
+                elif self.dataset == 'CIFAR100': norm = ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))
                 self.transform = transforms.Compose([
+                    transforms.RandomCrop(32, padding=4),
+                    transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
-                    transforms.Normalize((0.1904,), (0.3475,))
-                    ])
-            elif self.dataset == 'FMNIST':
-                self.transform = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.2860,), (0.3530,))
-                    ])
-            self.train_dataset = datasets.__dict__[self.dataset](
+                    transforms.Normalize(*norm)
+                ])
+
+            # We weill put the self.train_dataset after a validation set is taken from the train set if specified
+            full_train_dataset = datasets.__dict__[self.dataset](
                 root='Datasets/raw_datasets', 
                 train=True, 
                 transform=self.transform, 
@@ -138,15 +148,31 @@ class Data_handling(Dataset):
                 train=False, 
                 transform=self.transform, 
                 download=True)
-            # full_dataset = torch.utils.data.ConcatDataset([train_dataset, test_dataset])
-            # for the full with a random partition transforms mut be changed
             
-            self.num_classes = len(np.unique(self.train_dataset.targets))
+            self.num_classes = len(np.unique(full_train_dataset.targets))
+
+            # Lets create a validation set from the training set if specified (if not, the full train set is used for training)
+            if self.val_size is not None and 0 < self.val_size < 1:
+                full_train_len = len(full_train_dataset)
+                valid_len = int(full_train_len * self.val_size)
+                train_len = full_train_len - valid_len
+                
+                # This generator ensures the same partition if needed (if seed is given)
+                generator = torch.Generator().manual_seed(self.splitting_seed) if self.splitting_seed is not None else None
+                
+                self.train_dataset, self.valid_dataset = random_split(
+                    full_train_dataset, [train_len, valid_len], generator=generator
+                )
+            else:
+                self.train_dataset = full_train_dataset
+                self.valid_dataset = None
             
 
-            self.train_num_samples = self.train_dataset.data.shape[0]
-            self.test_num_samples = self.test_dataset.data.shape[0]
-            
+            self.train_num_samples = len(self.train_dataset)
+            self.test_num_samples = len(self.test_dataset)
+            self.valid_num_samples = len(self.valid_dataset) if self.valid_dataset is not None else 0
+
+#---------------This might be useless------------------------------------------------------------------------------------------------------------
             self.train_dataset.data = self.train_dataset.data.to(torch.float32).view((self.train_num_samples,-1))
             self.test_dataset.data = self.test_dataset.data.to(torch.float32).view((self.test_num_samples,-1))
             
@@ -154,60 +180,12 @@ class Data_handling(Dataset):
             
             self.train_dataset.targets = self.train_dataset.targets.to(torch.long)
             self.test_dataset.targets = self.test_dataset.targets.to(torch.long)
-        elif self.dataset in ['Cifar10']:
-            self.dataset = self.dataset.upper()
-            self.transform = transforms.Compose([
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ])
-            self.train_dataset = datasets.__dict__[self.dataset](
-                root='Datasets/raw_datasets', 
-                train=True, 
-                transform=self.transform, 
-                download=True)
-            self.test_dataset = datasets.__dict__[self.dataset](
-                root='Datasets/raw_datasets', 
-                train=False, 
-                transform=self.transform, 
-                download=True)
-            self.num_classes = len(np.unique(self.train_dataset.targets))
-            
-            
 
-            self.train_num_samples = self.train_dataset.data.shape[0]
-            self.test_num_samples = self.test_dataset.data.shape[0]
-            
-            self.train_dataset.data = torch.tensor(self.train_dataset.data, dtype=torch.float32)
-            self.train_dataset.data = self.train_dataset.data.permute(0, 3, 1, 2) 
-            self.test_dataset.data = torch.tensor(self.test_dataset.data, dtype=torch.float32)
-            self.test_dataset.data = self.test_dataset.data.permute(0, 3, 1, 2) 
-            self.num_features = None
-            
-            
-            self.train_dataset.targets = torch.tensor(self.train_dataset.targets, dtype=torch.long)
-            self.test_dataset.targets = torch.tensor(self.test_dataset.targets, dtype=torch.long)
 
-        elif self.dataset in ['Cifar100']:
-            self.dataset = self.dataset.upper()
-            self.transform = transforms.Compose([
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                ])
-            self.train_dataset = datasets.__dict__[self.dataset](
-                root='Datasets/raw_datasets', 
-                train=True, 
-                transform=self.transform, 
-                download=True)
-            self.test_dataset = datasets.__dict__[self.dataset](
-                root='Datasets/raw_datasets', 
-                train=False, 
-                transform=self.transform, 
-                download=True)
-            
+       
+
+
+# ---------------------------------------------------------------------------------------------------------------------------            
             fine_to_coarse_mapping = [
                 0, 0, 0, 0, 0,  # aquatic mammals
                 1, 1, 1, 1, 1,  # fish
@@ -243,6 +221,174 @@ class Data_handling(Dataset):
 
             self.num_classes = len(np.unique(self.train_dataset.targets))
             print(self.num_classes)
+        else:
+            if self.dataset in openml_ids:
+                data = openml.datasets.get_dataset(openml_ids[self.dataset])
+                X, y, categorical, feature_names = data.get_data(target=data.default_target_attribute)
+                if any(categorical):
+                    raise ValueError("TBD. For now, we don't handle categorical variables.")
+                X, y = X.values, le.fit_transform(y) #fit_transform encodes labels into classes [0,1,2,...,n_classes-1]
+                X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
+            elif self.dataset in uci_ids:
+                data = fetch_ucirepo(id = uci_ids[self.dataset])
+                if np.any(data.variables.type[1:]=='Categorical'):
+                    raise ValueError("TBD. For now, we don't handle categorical variables.")
+                X = data.data.features 
+                y = data.data.targets
+                X, y = X.values, le.fit_transform(y) #fit_transform encodes labels into classes [0,1,2,...,n_classes-1]
+                X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
+            elif self.dataset == 'gmm':
+                num_samples = 4000
+                n_components = 4
+                n_features = 3
+
+                # Means and covariances
+                means = np.array([
+                    [0, 0, 0],
+                    [3, 3, 3],
+                    [0, -3, -3],
+                    [3, 0, 0]
+                    ])
+                covariances = np.array([
+                    3*np.eye(3),
+                    1.5*np.eye(3),
+                    3*np.eye(3),
+                    4*np.eye(3)
+                    ])
+
+                # Mixture weights
+                self.weights = np.array([0.1, 0.3, 0.5, 0.1])
+
+                gmm = sklearn.mixture.GaussianMixture(n_components=n_components, covariance_type='full')
+                gmm.weights_ = self.weights
+                gmm.means_ = means
+                gmm.covariances_ = covariances
+                gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
+                
+                X, y = gmm.sample(n_samples=num_samples)
+
+            elif self.dataset == 'hypercube':
+                X, y = sklearn.datasets.make_classification(
+                    n_samples=400, n_features=40, n_informative=40,
+                    n_redundant=0, n_repeated=0, n_classes=4,
+                    n_clusters_per_class=2,
+                    weights=None, flip_y=0.0001, class_sep=1.0, hypercube=True,
+                    shift=0.0, scale=1.0, shuffle=True, random_state=None)
+            
+            elif self.dataset == 'blobs':
+                X, y = sklearn.datasets.make_blobs(
+                    n_samples=400, n_features=2, centers=20, cluster_std=2,
+                    center_box=(-10.0, 10.0), shuffle=True, random_state=None)
+            elif self.dataset == 'blobs2':
+                X, y = sklearn.datasets.make_blobs(
+                    n_samples=400, n_features=4, centers=10, cluster_std=1,
+                    center_box=(-10.0, 10.0), shuffle=True, random_state=None)
+            elif self.dataset in uci_ids:
+                raise ValueError("TBD. We still dont support UCI datasets.") 
+
+            self.num_classes = len(np.unique(y))
+            self.num_features = X.shape[1]
+            if dataset == 'clothing1m':
+                self.num_classes = len(np.unique(y_train))
+                self.num_features = X_train.shape[1]
+            else:
+                X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(X, y, train_size = self.tr_size, random_state = self.splitting_seed)
+                self.num_classes = len(np.unique(y))
+                self.num_features = X.shape[1]
+
+            self.train_num_samples = X_train.shape[0]
+            self.test_num_samples = X_test.shape[0]
+            
+            X_train = torch.from_numpy(X_train).to(torch.float32)
+            X_test = torch.from_numpy(X_test).to(torch.float32)
+            y_train = torch.from_numpy(y_train).to(torch.long)
+            y_test = torch.from_numpy(y_test).to(torch.long)
+
+            self.train_dataset = TensorDataset(X_train, y_train)
+            self.test_dataset = TensorDataset(X_test, y_test)
+
+            # This is done to mantain coherence between de datset classes
+            self.train_dataset.data = self.train_dataset.tensors[0]
+            self.train_dataset.targets = self.train_dataset.tensors[1]
+            self.test_dataset.data = self.test_dataset.tensors[0]
+            self.test_dataset.targets = self.test_dataset.tensors[1]
+        if self.dataset not in ['clothing1m','clothing1m_not_efficient']:    
+            self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
+            self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]
+
+        '''#One hot encoding of the labels
+        print(self.train_dataset.targets)
+        self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
+        self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]'''
+
+    def __getitem__(self, index):
+        if self.weak_labels is None:
+            x = self.train_dataset.data[index]
+            y = self.train_dataset.targets[index]
+            return x, y
+        else:
+            x = self.train_dataset.data[index]
+            w = self.weak_labels[index]
+            y = self.train_dataset.targets[index]
+            return x, w, y
+        
+    def get_dataloader(self, indices = None, weak_labels = None):
+        '''
+        weak_labels(str): 'weak', 'virtual' or None
+        '''
+        #Not sure ifindices is necessary. It works this way
+        if indices is None:
+            indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
+        if weak_labels is None: 
+        #(self.weak_labels is None) & (self.virtual_labels is None):
+            tr_dataset = TensorDataset(self.train_dataset.data[indices],
+                                    self.train_dataset.targets[indices])
+        elif weak_labels == 'virtual':
+            if self.virtual_labels is None:
+                print('you must provide virtual labels via include_virtual()')
+                self.train_loader = None
+            else:
+                tr_dataset = TensorDataset(self.train_dataset.data[indices], 
+                                    self.virtual_labels[indices],
+                                    self.train_dataset.targets[indices])
+        elif weak_labels == 'weak':
+            if self.weak_labels is None:
+                print('you must provide weak labels via include_weak()')
+                self.train_loader = None
+            else:
+                tr_dataset = TensorDataset(self.train_dataset.data[indices], 
+                                    self.weak_labels[indices],
+                                    self.train_dataset.targets[indices])
+
+        self.train_loader = DataLoader(tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle,
+                                                        num_workers=0)
+        self.test_loader = DataLoader(TensorDataset(
+            self.test_dataset.data, self.test_dataset.targets
+        ), batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
+        return self.train_loader, self.test_loader
+    
+    def get_data(self):
+        train_x = self.train_dataset.data
+        train_y = self.train_dataset.targets
+        test_x = self.test_dataset.data
+        test_y = self.test_dataset.targets
+
+        return train_x, train_y, test_x, test_y
+    
+    def include_weak(self, z):
+        if torch.is_tensor(z):
+            self.weak_labels = z
+        else:
+            self.weak_labels = torch.from_numpy(z)
+            
+    def include_virtual(self, vy):
+        if torch.is_tensor(vy):
+            self.virtual_labels = vy
+        else:
+            self.virtual_labels = torch.from_numpy(vy)
+
+
+        ''' Clothing 1M needs to be handeled separately due to its peculiarities. So, for now, it will remanin commented out.
         elif self.dataset == 'clothing1m':
             metadata_dir = '/export/usuarios_ml4ds/danibacaicoa/ForwardBackard_losses_old/Datasets/raw_datasets/Clothing1M/'
             # Define the root directory where images are actually stored. Often the same as metadata_dir.
@@ -473,171 +619,4 @@ class Data_handling(Dataset):
             self.num_classes = len(np.unique(self.train_dataset.targets))
             print(self.num_classes)
             self.weak_labels = y_train
-            
-        else: 
-            if self.dataset in openml_ids:
-                data = openml.datasets.get_dataset(openml_ids[self.dataset])
-                X, y, categorical, feature_names = data.get_data(target=data.default_target_attribute)
-                if any(categorical):
-                    raise ValueError("TBD. For now, we don't handle categorical variables.")
-                X = X.values
-                y = le.fit_transform(y) #Tis encodes labels into classes [0,1,2,...,n_classes-1]
-                X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
-            elif self.dataset in uci_ids:
-                data = fetch_ucirepo(id = uci_ids[self.dataset])
-                if np.any(data.variables.type[1:]=='Categorical'):
-                    raise ValueError("TBD. For now, we don't handle categorical variables.")
-                X = data.data.features 
-                y = data.data.targets
-                X = X.values
-                y = le.fit_transform(y)
-                X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
-            elif self.dataset == 'gmm':
-                num_samples = 4000
-                n_components = 4
-                n_features = 3
-
-                # Means and covariances
-                means = np.array([
-                    [0, 0, 0],
-                    [3, 3, 3],
-                    [0, -3, -3],
-                    [3, 0, 0]
-                    ])
-                covariances = np.array([
-                    3*np.eye(3),
-                    1.5*np.eye(3),
-                    3*np.eye(3),
-                    4*np.eye(3)
-                    ])
-
-                # Mixture weights
-                self.weights = np.array([0.1, 0.3, 0.5, 0.1])
-
-                gmm = sklearn.mixture.GaussianMixture(n_components=n_components, covariance_type='full')
-                gmm.weights_ = self.weights
-                gmm.means_ = means
-                gmm.covariances_ = covariances
-                gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
-                
-                X, y = gmm.sample(n_samples=num_samples)
-
-            elif self.dataset == 'hypercube':
-                X, y = sklearn.datasets.make_classification(
-                    n_samples=400, n_features=40, n_informative=40,
-                    n_redundant=0, n_repeated=0, n_classes=4,
-                    n_clusters_per_class=2,
-                    weights=None, flip_y=0.0001, class_sep=1.0, hypercube=True,
-                    shift=0.0, scale=1.0, shuffle=True, random_state=None)
-            
-            elif self.dataset == 'blobs':
-                X, y = sklearn.datasets.make_blobs(
-                    n_samples=400, n_features=2, centers=20, cluster_std=2,
-                    center_box=(-10.0, 10.0), shuffle=True, random_state=None)
-            elif self.dataset == 'blobs2':
-                X, y = sklearn.datasets.make_blobs(
-                    n_samples=400, n_features=4, centers=10, cluster_std=1,
-                    center_box=(-10.0, 10.0), shuffle=True, random_state=None)
-            elif self.dataset in uci_ids:
-                raise ValueError("TBD. We still dont support UCI datasets.") 
-
-            self.num_classes = len(np.unique(y))
-            self.num_features = X.shape[1]
-            if dataset == 'clothing1m':
-                self.num_classes = len(np.unique(y_train))
-                self.num_features = X_train.shape[1]
-            else:
-                X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(X, y, train_size = self.tr_size, random_state = self.splitting_seed)
-                self.num_classes = len(np.unique(y))
-                self.num_features = X.shape[1]
-
-            self.train_num_samples = X_train.shape[0]
-            self.test_num_samples = X_test.shape[0]
-            
-            X_train = torch.from_numpy(X_train).to(torch.float32)
-            X_test = torch.from_numpy(X_test).to(torch.float32)
-            y_train = torch.from_numpy(y_train).to(torch.long)
-            y_test = torch.from_numpy(y_test).to(torch.long)
-
-            self.train_dataset = TensorDataset(X_train, y_train)
-            self.test_dataset = TensorDataset(X_test, y_test)
-
-            # This is done to mantain coherence between de datset classes
-            self.train_dataset.data = self.train_dataset.tensors[0]
-            self.train_dataset.targets = self.train_dataset.tensors[1]
-            self.test_dataset.data = self.test_dataset.tensors[0]
-            self.test_dataset.targets = self.test_dataset.tensors[1]
-        if self.dataset not in ['clothing1m','clothing1m_not_efficient']:    
-            self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
-            self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]
-
-        '''#One hot encoding of the labels
-        print(self.train_dataset.targets)
-        self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
-        self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]'''
-
-    def __getitem__(self, index):
-        if self.weak_labels is None:
-            x = self.train_dataset.data[index]
-            y = self.train_dataset.targets[index]
-            return x, y
-        else:
-            x = self.train_dataset.data[index]
-            w = self.weak_labels[index]
-            y = self.train_dataset.targets[index]
-            return x, w, y
-        
-    def get_dataloader(self, indices = None, weak_labels = None):
-        '''
-        weak_labels(str): 'weak', 'virtual' or None
-        '''
-        #Not sure ifindices is necessary. It works this way
-        if indices is None:
-            indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
-        if weak_labels is None: 
-        #(self.weak_labels is None) & (self.virtual_labels is None):
-            tr_dataset = TensorDataset(self.train_dataset.data[indices],
-                                    self.train_dataset.targets[indices])
-        elif weak_labels == 'virtual':
-            if self.virtual_labels is None:
-                print('you must provide virtual labels via include_virtual()')
-                self.train_loader = None
-            else:
-                tr_dataset = TensorDataset(self.train_dataset.data[indices], 
-                                    self.virtual_labels[indices],
-                                    self.train_dataset.targets[indices])
-        elif weak_labels == 'weak':
-            if self.weak_labels is None:
-                print('you must provide weak labels via include_weak()')
-                self.train_loader = None
-            else:
-                tr_dataset = TensorDataset(self.train_dataset.data[indices], 
-                                    self.weak_labels[indices],
-                                    self.train_dataset.targets[indices])
-
-        self.train_loader = DataLoader(tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle,
-                                                        num_workers=0)
-        self.test_loader = DataLoader(TensorDataset(
-            self.test_dataset.data, self.test_dataset.targets
-        ), batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
-        return self.train_loader, self.test_loader
-    
-    def get_data(self):
-        train_x = self.train_dataset.data
-        train_y = self.train_dataset.targets
-        test_x = self.test_dataset.data
-        test_y = self.test_dataset.targets
-
-        return train_x, train_y, test_x, test_y
-    
-    def include_weak(self, z):
-        if torch.is_tensor(z):
-            self.weak_labels = z
-        else:
-            self.weak_labels = torch.from_numpy(z)
-            
-    def include_virtual(self, vy):
-        if torch.is_tensor(vy):
-            self.virtual_labels = vy
-        else:
-            self.virtual_labels = torch.from_numpy(vy)
+        '''    

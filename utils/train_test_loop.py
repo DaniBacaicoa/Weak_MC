@@ -136,3 +136,89 @@ def train_and_evaluate(model, trainloader, testloader, optimizer, loss_fn, num_e
     results_df = pd.DataFrame(results)
 
     return model, results_df
+
+
+
+def train_test_loop(model, train_loader, val_loader, test_loader,
+                    optimizer, loss_fn, num_epochs, repetitions, sound = 10):
+    #Let's set the random seed for reproducibility
+    seed = 42 
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+    # Initialize a list to store epoch data
+    results = []
+
+
+    # Set the device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    for i, epoch in enumerate(range(num_epochs)):
+        start_time = time.time()
+        model.train()
+
+        running_loss = 0.0
+        correct_train = 0
+
+        for inputs, vl, y_idx in train_loader:
+            inputs, vl, y_idx = inputs.to(device), vl.to(device), y_idx.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_fn(outputs, vl) 
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            _, preds = torch.max(outputs, dim=1)  # This gives us the predicted class 
+            _, true = torch.max(y_idx, dim=1)     # We will get accuracy based on true labels!
+            correct_train += torch.sum(preds == true)
+
+        train_acc = correct_train.double() / len(train_loader.dataset)
+        train_loss = running_loss / len(train_loader.dataset)
+
+        # Check 
+        model.eval()
+        correct_val = 0
+        with torch.no_grad():
+            for inputs, targets in val_loader: 
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+
+                _, preds = torch.max(outputs, dim=1)
+                _, true = torch.max(targets, dim=1)
+                correct_val += torch.sum(preds == true)
+
+        val_acc = correct_val.double() / len(val_loader.dataset)
+
+        # Evaluate the model on the test set
+        correct_test = 0
+        with torch.no_grad():
+            for inputs, targets in test_loader: 
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+
+                _, preds = torch.max(outputs, dim=1)
+                _, true = torch.max(targets, dim=1)
+                correct_test += torch.sum(preds == true)
+
+        test_acc = correct_test.double() / len(test_loader.dataset)
+
+        # Calculate detached loss 
+        detached_train_loss = 0.0
+        detached_val_loss = 0.0
+        detached_test_loss = 0.0
+        with torch.no_grad():
+            det_loss_fn = torch.nn.CrossEntropyLoss()  
+            for inputs, _, targets in train_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                detached_train_loss += det_loss_fn(outputs, targets).item()
+            detached_train_loss /= len(train_loader.dataset)
+
+            for inputs, targets in val_loader:
+                inputs, targets = inputs
+    
