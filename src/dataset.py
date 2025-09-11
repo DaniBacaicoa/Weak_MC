@@ -30,13 +30,18 @@ from PIL import Image
 
 class Data_handling(Dataset):
     def __init__(self, dataset, train_size, test_size = None, valid_size = None, batch_size = 64, shuffling = False, splitting_seed = None):
-        self.dataset = dataset
-        self.dataset_source = None
-
-        self.tr_size = train_size
-        self.val_size = valid_size
-        self.test_size = test_size
-
+        # Valid size should be given as a fraction of the train dataset (not of the whole dataset)
+        if valid_size is not None & (train_size + valid_size + test_size == 1):
+            raise ValueError("If valid_size is given, train_size + test_size must be equal to 1: valid_size is considered as a fraction of the train dataset.")
+ 
+        if valid_size is None:
+            self.tr_size = train_size
+            self.test_size = 1 - test_size
+        else:
+            self.tr_size = train_size
+            self.val_size = valid_size
+            self.test_size = 1 - self.tr_size 
+        
         self.weak_labels = None
         self.virtual_labels = None
 
@@ -49,7 +54,7 @@ class Data_handling(Dataset):
         # <<< ADDED: Initialize validation attributes
         self.valid_dataset = None
         self.valid_loader = None
-        self.valid_num_samples = 0
+        #self.valid_num_samples = 0
 
         openml_ids = {
             'iris': 61,  # 150 x 5 - 3 (n_samples x n_feat - n_classes)
@@ -152,7 +157,7 @@ class Data_handling(Dataset):
             self.num_classes = len(np.unique(full_train_dataset.targets))
 
             # Lets create a validation set from the training set if specified (if not, the full train set is used for training)
-            if self.val_size is not None and 0 < self.val_size < 1:
+            if self.val_size is not None:
                 full_train_len = len(full_train_dataset)
                 valid_len = int(full_train_len * self.val_size)
                 train_len = full_train_len - valid_len
@@ -173,20 +178,20 @@ class Data_handling(Dataset):
             self.valid_num_samples = len(self.valid_dataset) if self.valid_dataset is not None else 0
 
 #---------------This might be useless------------------------------------------------------------------------------------------------------------
-            self.train_dataset.data = self.train_dataset.data.to(torch.float32).view((self.train_num_samples,-1))
-            self.test_dataset.data = self.test_dataset.data.to(torch.float32).view((self.test_num_samples,-1))
+            #self.train_dataset.data = self.train_dataset.data.to(torch.float32).view((self.train_num_samples,-1))
+            #self.test_dataset.data = self.test_dataset.data.to(torch.float32).view((self.test_num_samples,-1))
             
-            self.num_features = self.train_dataset.data.shape[1]
+            #self.num_features = self.train_dataset.data.shape[1]
             
-            self.train_dataset.targets = self.train_dataset.targets.to(torch.long)
-            self.test_dataset.targets = self.test_dataset.targets.to(torch.long)
+            #self.train_dataset.targets = self.train_dataset.targets.to(torch.long)
+            #self.test_dataset.targets = self.test_dataset.targets.to(torch.long)
 
 
        
 
 
 # ---------------------------------------------------------------------------------------------------------------------------            
-            fine_to_coarse_mapping = [
+            """ fine_to_coarse_mapping = [
                 0, 0, 0, 0, 0,  # aquatic mammals
                 1, 1, 1, 1, 1,  # fish
                 2, 2, 2, 2, 2,  # flowers
@@ -220,7 +225,7 @@ class Data_handling(Dataset):
             self.test_dataset.targets = torch.tensor([fine_to_coarse_mapping[fine_idx] for fine_idx in self.test_dataset.targets], dtype=torch.long)
 
             self.num_classes = len(np.unique(self.train_dataset.targets))
-            print(self.num_classes)
+            print(self.num_classes) """
         else:
             if self.dataset in openml_ids:
                 data = openml.datasets.get_dataset(openml_ids[self.dataset])
@@ -288,26 +293,42 @@ class Data_handling(Dataset):
 
             self.num_classes = len(np.unique(y))
             self.num_features = X.shape[1]
-            if dataset == 'clothing1m':
-                self.num_classes = len(np.unique(y_train))
-                self.num_features = X_train.shape[1]
-            else:
-                X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(X, y, train_size = self.tr_size, random_state = self.splitting_seed)
-                self.num_classes = len(np.unique(y))
-                self.num_features = X.shape[1]
+            #if dataset == 'clothing1m':
+            #    self.num_classes = len(np.unique(y_train))
+            #    self.num_features = X_train.shape[1]
+            #else:
+            X_train_full, X_test, y_train_full, y_test = sklearn.model_selection.train_test_split(X, y, train_size = self.tr_size, random_state = self.splitting_seed)
+            self.num_classes = len(np.unique(y))
+            self.num_features = X.shape[1]
 
+            if self.val_size is not None:
+                X_train, X_valid, y_train, y_valid = sklearn.model_selection.train_test_split(
+                    X_train_full, y_train_full, test_size=self.val_size, random_state=self.splitting_seed
+                )
+            else:
+                X_train, y_train = X_train_full, y_train_full
+                self.valid_dataset = None
+                
+        
             self.train_num_samples = X_train.shape[0]
             self.test_num_samples = X_test.shape[0]
+            self.valid_num_samples = X_valid.shape[0] if self.valid_dataset is not None else None
             
             X_train = torch.from_numpy(X_train).to(torch.float32)
             X_test = torch.from_numpy(X_test).to(torch.float32)
             y_train = torch.from_numpy(y_train).to(torch.long)
             y_test = torch.from_numpy(y_test).to(torch.long)
+            if self.valid_dataset is not None:
+                X_valid = torch.from_numpy(X_valid).to(torch.float32)
+                y_valid = torch.from_numpy(y_valid).to(torch.long)
+                self.valid_dataset = TensorDataset(X_valid, y_valid)
 
             self.train_dataset = TensorDataset(X_train, y_train)
             self.test_dataset = TensorDataset(X_test, y_test)
 
             # This is done to mantain coherence between de datset classes
+            #Again, this might be useless
+
             self.train_dataset.data = self.train_dataset.tensors[0]
             self.train_dataset.targets = self.train_dataset.tensors[1]
             self.test_dataset.data = self.test_dataset.tensors[0]
@@ -338,34 +359,62 @@ class Data_handling(Dataset):
         '''
         #Not sure ifindices is necessary. It works this way
         if indices is None:
-            indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
+            #indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
+            indices = torch.arange(len(self.train_dataset))
+
         if weak_labels is None: 
-        #(self.weak_labels is None) & (self.virtual_labels is None):
+
             tr_dataset = TensorDataset(self.train_dataset.data[indices],
                                     self.train_dataset.targets[indices])
+            
         elif weak_labels == 'virtual':
+
             if self.virtual_labels is None:
                 print('you must provide virtual labels via include_virtual()')
+
                 self.train_loader = None
+
             else:
+                
                 tr_dataset = TensorDataset(self.train_dataset.data[indices], 
                                     self.virtual_labels[indices],
                                     self.train_dataset.targets[indices])
+                
         elif weak_labels == 'weak':
+
             if self.weak_labels is None:
                 print('you must provide weak labels via include_weak()')
+
                 self.train_loader = None
+            
             else:
                 tr_dataset = TensorDataset(self.train_dataset.data[indices], 
                                     self.weak_labels[indices],
                                     self.train_dataset.targets[indices])
 
-        self.train_loader = DataLoader(tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle,
-                                                        num_workers=0)
-        self.test_loader = DataLoader(TensorDataset(
-            self.test_dataset.data, self.test_dataset.targets
-        ), batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
-        return self.train_loader, self.test_loader
+        self.train_loader = DataLoader(
+            tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0
+        )
+
+        if self.valid_dataset is not None:
+            self.valid_loader = DataLoader(
+                self.valid_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,  # We are not shuffling validation data
+                num_workers=0
+            )
+            
+        self.test_loader = DataLoader(
+            self.test_dataset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0
+        )
+
+        #self.test_loader = DataLoader(TensorDataset(
+        #    self.test_dataset.data, self.test_dataset.targets
+        #), batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
+        if self.valid_dataset is not None:
+            return self.train_loader, self.valid_loader, self.test_loader
+        else:
+            return self.train_loader, self.test_loader
     
     def get_data(self):
         train_x = self.train_dataset.data
