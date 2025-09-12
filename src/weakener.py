@@ -483,7 +483,10 @@ class Weakener(object):
         # the version of np.random.choice changed in 1.7.0 that could raise an error-
         d, c = self.M.shape
         # [TBD] include seed
-        self.z = torch.Tensor([np.random.choice(d, p=self.M[:, tl]) for tl in torch.max(y, axis=1)[1]]).to(torch.int32)
+        if np.array(y).ndim == 1:
+            self.z = torch.Tensor([np.random.choice(d, p=self.M[:, tl]) for tl in y]).to(torch.int32)
+        else:
+            self.z = torch.Tensor([np.random.choice(d, p=self.M[:, tl]) for tl in torch.max(y, axis=1)[1]]).to(torch.int32)
 
         self.w = torch.from_numpy(self.Z[self.z.to(torch.int32)] + 0.)
         self.Y = np.linalg.pinv(self.M)

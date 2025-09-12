@@ -29,18 +29,17 @@ from PIL import Image
 
 
 class Data_handling(Dataset):
-    def __init__(self, dataset, train_size, test_size = None, valid_size = None, batch_size = 64, shuffling = False, splitting_seed = None):
+    def __init__(self, dataset, train_size, valid_size = None, batch_size = 64, shuffling = False, splitting_seed = None):
         # Valid size should be given as a fraction of the train dataset (not of the whole dataset)
-        if valid_size is not None & (train_size + valid_size + test_size == 1):
-            raise ValueError("If valid_size is given, train_size + test_size must be equal to 1: valid_size is considered as a fraction of the train dataset.")
+        #if (valid_size is not None and (train_size + valid_size + test_size == 1)):
+        #    raise ValueError("If valid_size is given, train_size + test_size must be equal to 1: valid_size is considered as a fraction of the train dataset.")
  
-        if valid_size is None:
-            self.tr_size = train_size
-            self.test_size = 1 - test_size
-        else:
-            self.tr_size = train_size
-            self.val_size = valid_size
-            self.test_size = 1 - self.tr_size 
+        self.dataset = dataset
+        self.tr_size = train_size
+        self.val_size = valid_size
+        self.batch_size = batch_size
+        self.shuffle = shuffling
+        self.splitting_seed = splitting_seed 
         
         self.weak_labels = None
         self.virtual_labels = None
@@ -51,7 +50,7 @@ class Data_handling(Dataset):
 
         self.splitting_seed = splitting_seed
 
-        # <<< ADDED: Initialize validation attributes
+
         self.valid_dataset = None
         self.valid_loader = None
         #self.valid_num_samples = 0
@@ -329,34 +328,153 @@ class Data_handling(Dataset):
             # This is done to mantain coherence between de datset classes
             #Again, this might be useless
 
-            self.train_dataset.data = self.train_dataset.tensors[0]
-            self.train_dataset.targets = self.train_dataset.tensors[1]
-            self.test_dataset.data = self.test_dataset.tensors[0]
-            self.test_dataset.targets = self.test_dataset.tensors[1]
-        if self.dataset not in ['clothing1m','clothing1m_not_efficient']:    
-            self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
-            self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]
+
+        # Lets mantain targets as 1D tensors of class indices rather than one-hot encoded
+        #    self.train_dataset.data = self.train_dataset.tensors[0]
+        #    self.train_dataset.targets = self.train_dataset.tensors[1]
+        #    self.test_dataset.data = self.test_dataset.tensors[0]
+        #    self.test_dataset.targets = self.test_dataset.tensors[1]
+        #if self.dataset not in ['clothing1m','clothing1m_not_efficient']:    
+        #    self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
+        #    self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]
 
         '''#One hot encoding of the labels
         print(self.train_dataset.targets)
         self.train_dataset.targets = torch.eye(self.num_classes)[self.train_dataset.targets]
         self.test_dataset.targets = torch.eye(self.num_classes)[self.test_dataset.targets]'''
 
+    #def __getitem__(self, index):
+    #    if self.weak_labels is None:
+    #        x = self.train_dataset.data[index]
+    #        y = self.train_dataset.targets[index]
+    #        return x, y
+    #    else:
+    #        x = self.train_dataset.data[index]
+    #        w = self.weak_labels[index]
+    #        y = self.train_dataset.targets[index]
+    #        return x, w, y
+        
     def __getitem__(self, index):
         if self.weak_labels is None:
-            x = self.train_dataset.data[index]
-            y = self.train_dataset.targets[index]
+            x = self.train_dataset.tensors[index,0]
+            y = self.train_dataset.tensors[index,1]
             return x, y
         else:
-            x = self.train_dataset.data[index]
+            x = self.train_dataset.tensors[index,0]
             w = self.weak_labels[index]
-            y = self.train_dataset.targets[index]
+            y = self.train_dataset.tensors[index,1]
             return x, w, y
-        
+
+    def include_weak(self, z):
+        if torch.is_tensor(z):
+            self.weak_labels = z
+        else:
+            self.weak_labels = torch.from_numpy(z)
+
+
     def get_dataloader(self, indices = None, weak_labels = None):
+        class _WeakLabelDataset(Dataset):
+            def __init__(self, base_dataset, weak_labels_tensor):
+                self.base_dataset = base_dataset
+                self.weak_labels = weak_labels_tensor
+
+                self.subset_weak_labels = self.weak_labels[self.base_dataset.indices]
+
+            def __len__(self):
+                return len(self.base_dataset)
+
+            def __getitem__(self, index):
+                x, y_true = self.base_dataset[index]
+                y_weak = self.subset_weak_labels[index]
+                return x, y_weak, y_true
+        
+        # Determine the dataset to use for the training loader
+        if indices is None: indices = torch.arange(len(self.train_dataset))
+        try:
+            tr_dataset = _WeakLabelDataset(self.train_dataset, self.weak_labels)
+        except:
+            tr_dataset = TensorDataset(self.train_dataset.tensors[0][indices], self.weak_labels[indices], self.train_dataset.tensors[1][indices])
+
+
+        self.train_loader = DataLoader(tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
+        
+        if self.valid_dataset is not None:
+            self.valid_loader = DataLoader(self.valid_dataset, batch_size=self.batch_size, shuffle=False, num_workers=0)
+        
+        self.test_loader = DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=0)
+
+        return self.train_loader, self.valid_loader, self.test_loader
+        
+        
+        
+        
         '''
         weak_labels(str): 'weak', 'virtual' or None
         '''
+        #Not sure ifindices is necessary. It works this way
+        if indices is None:
+            #indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
+            indices = torch.arange(len(self.train_dataset))
+
+        if weak_labels is None: 
+
+            tr_dataset = TensorDataset(self.train_dataset.tensors[indices,0],
+                                    self.train_dataset.tensors[indices,1])
+            
+        elif weak_labels == 'virtual':
+
+            if self.virtual_labels is None:
+                print('you must provide virtual labels via include_virtual()')
+
+                self.train_loader = None
+
+            else:
+                
+                tr_dataset = TensorDataset(self.train_dataset.tensors[indices,0], 
+                                    self.virtual_labels[indices],
+                                    self.train_dataset.tensors[indices,1])
+                
+        elif weak_labels == 'weak':
+
+            if self.weak_labels is None:
+                print('you must provide weak labels via include_weak()')
+
+                self.train_loader = None
+            
+            else:
+                tr_dataset = TensorDataset(self.train_dataset.tensors[indices,0], 
+                                    self.weak_labels[indices],
+                                    self.train_dataset.tensors[indices,1])
+
+        self.train_loader = DataLoader(
+            tr_dataset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0
+        )
+
+        if self.valid_dataset is not None:
+            self.valid_loader = DataLoader(
+                self.valid_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,  # We are not shuffling validation data
+                num_workers=0
+            )
+            
+        self.test_loader = DataLoader(
+            self.test_dataset, batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0
+        )
+
+        #self.test_loader = DataLoader(TensorDataset(
+        #    self.test_dataset.data, self.test_dataset.targets
+        #), batch_size=self.batch_size, shuffle=self.shuffle, num_workers=0)
+        if self.valid_dataset is not None:
+            return self.train_loader, self.valid_loader, self.test_loader
+        else:
+            return self.train_loader, self.test_loader
+
+    '''
+    def get_dataloader(self, indices = None, weak_labels = None):
+        
+        #weak_labels(str): 'weak', 'virtual' or None
+        
         #Not sure ifindices is necessary. It works this way
         if indices is None:
             #indices = torch.Tensor(list(range(len(self.train_dataset)))).to(torch.long)
@@ -424,20 +542,15 @@ class Data_handling(Dataset):
 
         return train_x, train_y, test_x, test_y
     
-    def include_weak(self, z):
-        if torch.is_tensor(z):
-            self.weak_labels = z
-        else:
-            self.weak_labels = torch.from_numpy(z)
+    
             
-    def include_virtual(self, vy):
-        if torch.is_tensor(vy):
-            self.virtual_labels = vy
-        else:
-            self.virtual_labels = torch.from_numpy(vy)
+    #def include_virtual(self, vy):
+    #    if torch.is_tensor(vy):
+    #        self.virtual_labels = vy
+    #    else:
+    #        self.virtual_labels = torch.from_numpy(vy)
 
-
-        ''' Clothing 1M needs to be handeled separately due to its peculiarities. So, for now, it will remanin commented out.
+        #Clothing 1M needs to be handeled separately due to its peculiarities. So, for now, it will remain commented out.
         elif self.dataset == 'clothing1m':
             metadata_dir = '/export/usuarios_ml4ds/danibacaicoa/ForwardBackard_losses_old/Datasets/raw_datasets/Clothing1M/'
             # Define the root directory where images are actually stored. Often the same as metadata_dir.
