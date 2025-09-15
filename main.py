@@ -50,78 +50,6 @@ def pick_loss(loss_name: str, M: np.ndarray, loss_code: str):
         raise ValueError(f"Unknown --loss '{loss_name}'. Choose MarginalChainProperLoss or ForwardProperLoss.")
 
 
-def call_with_supported_args(func, **kwargs):
-    """Introspect func signature and pass only supported kwargs; helpful if utils signature changes."""
-    import inspect
-    params = inspect.signature(func).parameters
-    supported = {k: v for k, v in kwargs.items() if (k in params) or ("**" in str(params))}
-    return func(**supported) if any(k in params for k in supported) else func(*[kwargs[k] for k in params])
-
-
-def smart_train_and_evaluate(model, train_loader, test_loader, optimizer, em_loss, num_epochs, device, corr_p):
-    """
-    Adapt to different train_and_evaluate signatures by renaming kwargs.
-    """
-    sig = inspect.signature(train_and_evaluate).parameters
-    kw = {}
-    # Common aliases across different repos
-    alias = {
-        "model": "model",
-        "optimizer": "optimizer",
-        "device": "device",
-        # train loader
-        "train_loader": "train_loader",
-        "trainloader": "train_loader",
-        "train_dl": "train_loader",
-        "tr_loader": "train_loader",
-        # test loader
-        "test_loader": "test_loader",
-        "testloader": "test_loader",
-        "valid_loader": "test_loader",
-        "val_loader": "test_loader",
-        # loss
-        "em_loss": "em_loss",
-        "loss_fn": "em_loss",
-        "criterion": "em_loss",
-        # epochs
-        "num_epochs": "num_epochs",
-        "epochs": "num_epochs",
-        "n_epochs": "num_epochs",
-        # additional hyperparams frequently required
-        "corr_p": "corr_p",
-    }
-    values = {
-        "model": model,
-        "optimizer": optimizer,
-        "device": device,
-        "train_loader": train_loader,
-        "test_loader": test_loader,
-        "em_loss": em_loss,
-        "num_epochs": num_epochs,
-        "corr_p": corr_p,
-    }
-    for param in sig:
-        if param in alias and alias[param] in values:
-            kw[param] = values[alias[param]]
-        elif param in values:
-            kw[param] = values[param]
-
-    try:
-        return train_and_evaluate(**kw)
-    except TypeError as e:
-        # Fallbacks for strictly positional signatures
-        # Try (model, trainloader, testloader, optimizer, loss_fn, num_epochs, corr_p, device)
-        try:
-            return train_and_evaluate(model, train_loader, test_loader, optimizer, em_loss, num_epochs, corr_p, device)
-        except Exception:
-            # Try (model, trainloader, testloader, optimizer, loss_fn, num_epochs, device)
-            try:
-                return train_and_evaluate(model, train_loader, test_loader, optimizer, em_loss, num_epochs, device)
-            except Exception as e2:
-                raise TypeError(f"Could not adapt to train_and_evaluate signature. "
-                                f"Detected params: {list(sig.keys())}. Original error: {e}\nFallback error: {e2}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Run weak-label training experiment.")
     parser.add_argument("--seed", type=int, default=42)
@@ -180,18 +108,16 @@ def main():
     em_loss = pick_loss(args.loss, M, loss_code=args.loss_code)
 
     # 5) Train/eval
-    # Use signature-safe invocation in case the utils function evolves.
-    model, results_df = smart_train_and_evaluate(
+
+    model, results_df = train_and_evaluate(
         model=model,
-        train_loader=train_loader,
-        test_loader=test_loader,
+        trainloader=train_loader,
+        testloader=test_loader,
         optimizer=optimizer,
-        em_loss=em_loss,
+        loss_fn=em_loss,
         num_epochs=args.epochs,
-        device=device,
         corr_p=args.corr_p,
     )
-
 
     # 6) Save outputs
     run_dir = build_output_dir(Path(args.results_dir), args)
