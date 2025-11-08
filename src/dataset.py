@@ -91,6 +91,7 @@ class Data_handling(Dataset):
             'cmc': 23,  # 1473 x 9 - 3
             }
         uci_ids = {#'breast-cancer-wisconsin': 699,  # 699 x 9 - 2
+            'dry-bean': 602,  # 13611 x 16 - 7
             'diabetes': 768,  # 768 x 8 - 2 #'heart-disease': 303,  # 303 x 13 - 5
             'ionosphere': 351,  # 351 x 34 - 2
             'sonar': 208,  # 208 x 60 - 2
@@ -110,7 +111,7 @@ class Data_handling(Dataset):
             }
         
         le = sklearn.preprocessing.LabelEncoder()
-        if self.dataset in self.dataset in ['mnist','kmnist','fmnist']:
+        if self.dataset in ['mnist','kmnist','fmnist']:
             self.dataset = self.dataset.upper()
             # The standard train/test partition of this datasets will be considered 
             # but we will add the random partition
@@ -484,14 +485,23 @@ class Data_handling(Dataset):
                 y = le.fit_transform(y) #Tis encodes labels into classes [0,1,2,...,n_classes-1]
                 X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
             elif self.dataset in uci_ids:
-                data = fetch_ucirepo(id = uci_ids[self.dataset])
-                if np.any(data.variables.type[1:]=='Categorical'):
-                    raise ValueError("TBD. For now, we don't handle categorical variables.")
-                X = data.data.features 
-                y = data.data.targets
-                X = X.values
+                ucidata = fetch_ucirepo(id = uci_ids[self.dataset])
+                #if np.any(ucidata.variables.type[1:]=='Categorical'):
+                #    raise ValueError("TBD. For now, we don't handle categorical variables.")
+                try:
+                    X = ucidata.data.features
+                    y = ucidata.data.targets
+                except Exception:
+                    X = getattr(ucidata, 'features', None)
+                    y = getattr(ucidata, 'targets', None)
+                    if X is None or y is None:
+                        raise ValueError(f"Could not extract features/targets for UCI dataset id {uci_ids[self.dataset]}")
+
+                y = np._core.ravel(y)
+                X = X.values if isinstance(X, pd.DataFrame) else np.asarray(X)
                 y = le.fit_transform(y)
-                X, y = sklearn.utils.shuffle(X, y, random_state = self.splitting_seed)
+                X, y = sklearn.utils.shuffle(X, y, random_state=self.splitting_seed)
+                
             elif self.dataset == 'gmm':
                 num_samples = 4000
                 n_components = 4
